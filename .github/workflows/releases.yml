@@ -1,0 +1,190 @@
+name: Create Releases
+
+on:
+  workflow_dispatch:
+    inputs:
+      convert_markdown:
+        description: 'Convert HTML to Markdown'
+        required: true
+        type: boolean
+        default: true
+      custom_docs_list:
+        description: 'Optional: Custom comma-separated list of docs (overrides DOCS_USER)'
+        required: false
+        type: string
+        default: ''
+
+jobs:
+  process-docs:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+
+    steps:
+      - name: Checkout Repository
+        uses: actions/checkout@v4
+
+      - name: Generate date-based tag and release name
+        id: generate_tag
+        run: |
+          CURRENT_DATE=$(date +'%Y%m%d')
+          echo "tag_name=$CURRENT_DATE" >> $GITHUB_OUTPUT
+          echo "release_name=$CURRENT_DATE" >> $GITHUB_OUTPUT
+          echo "Generated tag: $CURRENT_DATE"
+          echo "Generated release name: $CURRENT_DATE"
+
+      - name: Determine DOCS_USER
+        id: docs_user
+        run: |
+          # Priority: manual input > repo variable > default
+          if [ -n "${{ github.event.inputs.custom_docs_list }}" ]; then
+            echo "Using custom docs list from workflow input"
+            echo "DOCS_USER=${{ github.event.inputs.custom_docs_list }}" >> $GITHUB_ENV
+          elif [ -n "${{ vars.DOCS_USER }}" ]; then
+            echo "Using DOCS_USER from repository variables"
+            echo "DOCS_USER=${{ vars.DOCS_USER }}" >> $GITHUB_ENV
+          else
+            echo "Using default DOCS_USER"
+            echo "DOCS_USER=html,css,javascript,http" >> $GITHUB_ENV
+          fi
+          echo "DOCS_USER: $DOCS_USER"
+
+      - name: Install Dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y zip
+
+      - name: Set up Python
+        uses: actions/setup-python@v4
+        with:
+          python-version: '3.12'
+
+      - name: Install Python dependencies for HTML to Markdown conversion
+        if: ${{ github.event.inputs.convert_markdown == 'true' }}
+        run: |
+          pip install --upgrade pip
+          pip install html2text==2024.2.26
+
+      - name: (devdocs) Get Ruby Version from Gemfile
+        id: get_ruby_version
+        run: |
+          ruby_version=$(curl -s https://raw.githubusercontent.com/freeCodeCamp/devdocs/refs/heads/main/Gemfile | grep -oP "ruby '\K[^']+")
+          echo "ruby_version=${ruby_version}" >> $GITHUB_ENV
+
+      - name: (devdocs) Setup Ruby
+        uses: ruby/setup-ruby@v1
+        with:
+          ruby-version: ${{ env.ruby_version }}
+
+      - name: (devdocs) Clone and install dependencies
+        run: |
+          git clone --depth=1 https://github.com/freeCodeCamp/devdocs.git
+          cd devdocs
+          gem install bundler
+          bundle install
+
+      - name: Clean and check disk space
+        run: |
+          sudo apt-get clean
+          sudo apt-get autoremove
+          df -h
+
+      - name: (devdocs) List available documents
+        run: |
+          cd devdocs
+          bundle exec thor docs:list | tee ../_devdocs-docs-all.txt
+          echo ""
+          echo "Available documents for download:"
+          bundle exec thor docs:list | head -50
+
+      - name: (devdocs) Build documents
+        run: |
+          cd devdocs
+          IFS=',' read -ra DOCS <<< "${{ env.DOCS_USER }}"
+          echo "Downloading documents: ${#DOCS[@]} total"
+          for doc in "${DOCS[@]}"; do
+            echo "Downloading: $doc"
+            bundle exec thor docs:download "$doc" || echo "Failed to download $doc, continuing..."
+          done
+          df -h
+
+      - name: Convert HTML to Markdown
+        if: ${{ github.event.inputs.convert_markdown == 'true' }}
+        run: |
+          cd devdocs
+          mkdir -p public/markdown
+
+          # Set conversion date for metadata
+          export CONVERSION_DATE=$(date +'%Y%m%d_%H%M%S')
+
+          IFS=',' read -ra DOCS <<< "${{ env.DOCS_USER }}"
+          echo "Converting documents to Markdown: ${#DOCS[@]} total"
+
+          for doc in "${DOCS[@]}"; do
+            find "public/docs" -maxdepth 1 -type d -name "${doc}*" 2>/dev/null | while read -r doc_dir; do
+              if [ -d "$doc_dir" ]; then
+                dir_basename=$(basename "$doc_dir")
+                echo "Converting: $dir_basename"
+
+                python ../devdocs_html_to_markdown.py "$doc_dir" -o "public/markdown/$dir_basename" -q
+
+                # Check if conversion was successful
+                if [ -d "public/markdown/$dir_basename" ] && [ "$(ls -A "public/markdown/$dir_basename" 2>/dev/null)" ]; then
+                  echo "✓ Successfully converted: $dir_basename"
+                  echo "  Files generated: $(find "public/markdown/$dir_basename" -name "*.md" 2>/dev/null | wc -l)"
+                else
+                  echo "✗ Failed to convert: $dir_basename"
+                fi
+              fi
+            done
+            echo ""
+          done
+
+      - name: Create ZIP archives
+        if: always()
+        run: |
+          cd devdocs/public/docs
+          zip -r ../../../devdocs-docs-user-html.zip *
+
+          if [ -d "../markdown" ] && [ "$(ls -A ../markdown)" ]; then
+            cd ../markdown
+            zip -r ../../../devdocs-docs-user-md.zip * -x "docs.json"
+          else
+            echo "Creating empty markdown zip"
+            zip -q devdocs-docs-user-md.zip /dev/null
+          fi
+
+      - name: Generate SHA256 checksums
+        run: |
+          for file in *.{txt,zip};
+          do
+            if [ -f "$file" ]; then
+              sha256sum "$file" > "$file.sha256";
+              echo "Generated checksum for $file";
+            fi
+          done
+
+      - name: Upload artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: devdocs-files
+          path: |
+            _devdocs-docs-all.txt
+            devdocs-docs-user-html.zip
+            devdocs-docs-user-md.zip
+          if-no-files-found: warn
+          retention-days: 1
+
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@v1
+        with:
+          tag_name: ${{ steps.generate_tag.outputs.tag_name }}
+          name: ${{ steps.generate_tag.outputs.release_name }}
+          draft: false
+          prerelease: false
+          files: |
+            _devdocs-docs-all.txt
+            devdocs-docs-user-html.zip
+            devdocs-docs-user-md.zip
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
