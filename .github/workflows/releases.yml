@@ -92,7 +92,7 @@ jobs:
       - name: (devdocs) List available documents
         run: |
           cd devdocs
-          bundle exec thor docs:list | tee ../_devdocs-docs-all.txt
+          bundle exec thor docs:list | tee ../_devdocs-all.txt
           echo ""
           echo "Available documents for download:"
           bundle exec thor docs:list | head -50
@@ -144,14 +144,14 @@ jobs:
         if: always()
         run: |
           cd devdocs/public/docs
-          zip -r ../../../devdocs-docs-user-html.zip *
+          zip -r ../../../devdocs-user-html.zip *
 
           if [ -d "../markdown" ] && [ "$(ls -A ../markdown)" ]; then
             cd ../markdown
-            zip -r ../../../devdocs-docs-user-md.zip * -x "docs.json"
+            zip -r ../../../devdocs-user-md.zip * -x "docs.json"
           else
             echo "Creating empty markdown zip"
-            zip -q devdocs-docs-user-md.zip /dev/null
+            zip -q devdocs-user-md.zip /dev/null
           fi
 
       - name: Generate SHA256 checksums
@@ -169,9 +169,9 @@ jobs:
         with:
           name: devdocs-files
           path: |
-            _devdocs-docs-all.txt
-            devdocs-docs-user-html.zip
-            devdocs-docs-user-md.zip
+            _devdocs-all.txt
+            devdocs-user-html.zip
+            devdocs-user-md.zip
           if-no-files-found: warn
           retention-days: 1
 
@@ -183,8 +183,8 @@ jobs:
           draft: false
           prerelease: false
           files: |
-            _devdocs-docs-all.txt
-            devdocs-docs-user-html.zip
-            devdocs-docs-user-md.zip
+            _devdocs-all.txt
+            devdocs-user-html.zip
+            devdocs-user-md.zip
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
