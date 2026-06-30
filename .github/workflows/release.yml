@@ -1,4 +1,4 @@
-name: Create Releases
+name: Release
 
 on:
   workflow_dispatch:
@@ -14,15 +14,18 @@ on:
         type: string
         default: ''
 
+permissions:
+  contents: write
+
 jobs:
-  process-docs:
+  release:
     runs-on: ubuntu-latest
-    permissions:
-      contents: write
 
     steps:
       - name: Checkout Repository
-        uses: actions/checkout@v6
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683  # v6
+        with:
+          persist-credentials: false
 
       - name: Generate date-based tag and release name
         id: generate_tag
@@ -36,7 +39,6 @@ jobs:
       - name: Determine DOCS_USER
         id: docs_user
         run: |
-          # Priority: manual input > repo variable > default
           if [ -n "${{ github.event.inputs.custom_docs_list }}" ]; then
             echo "Using custom docs list from workflow input"
             echo "DOCS_USER=${{ github.event.inputs.custom_docs_list }}" >> $GITHUB_ENV
@@ -55,7 +57,7 @@ jobs:
           sudo apt-get install -y zip
 
       - name: Set up Python
-        uses: actions/setup-python@v6
+        uses: actions/setup-python@8d9ed9ac5b5349cb32a66bb81d1a1499cddbe391  # v5
         with:
           python-version: '3.12'
 
@@ -72,7 +74,7 @@ jobs:
           echo "ruby_version=${ruby_version}" >> $GITHUB_ENV
 
       - name: (devdocs) Setup Ruby
-        uses: ruby/setup-ruby@v1
+        uses: ruby/setup-ruby@552ceee96edf1e6db365a2e9e9ab6cf0827e21a0  # v1
         with:
           ruby-version: ${{ env.ruby_version }}
 
@@ -98,9 +100,11 @@ jobs:
           bundle exec thor docs:list | head -50
 
       - name: (devdocs) Build documents
+        env:
+          DOCS_USER: ${{ env.DOCS_USER }}
         run: |
           cd devdocs
-          IFS=',' read -ra DOCS <<< "${{ env.DOCS_USER }}"
+          IFS=',' read -ra DOCS <<< "$DOCS_USER"
           echo "Downloading documents: ${#DOCS[@]} total"
           for doc in "${DOCS[@]}"; do
             echo "Downloading: $doc"
@@ -110,25 +114,20 @@ jobs:
 
       - name: Convert HTML to Markdown
         if: ${{ github.event.inputs.convert_markdown == 'true' }}
+        env:
+          DOCS_USER: ${{ env.DOCS_USER }}
         run: |
           cd devdocs
           mkdir -p public/markdown
-
-          # Set conversion date for metadata
           export CONVERSION_DATE=$(date +'%Y%m%d_%H%M%S')
-
-          IFS=',' read -ra DOCS <<< "${{ env.DOCS_USER }}"
+          IFS=',' read -ra DOCS <<< "$DOCS_USER"
           echo "Converting documents to Markdown: ${#DOCS[@]} total"
-
           for doc in "${DOCS[@]}"; do
             find "public/docs" -maxdepth 1 -type d -name "${doc}*" 2>/dev/null | while read -r doc_dir; do
               if [ -d "$doc_dir" ]; then
                 dir_basename=$(basename "$doc_dir")
                 echo "Converting: $dir_basename"
-
                 python ../devdocs_html_to_markdown.py "$doc_dir" -o "public/markdown/$dir_basename" -q
-
-                # Check if conversion was successful
                 if [ -d "public/markdown/$dir_basename" ] && [ "$(ls -A "public/markdown/$dir_basename" 2>/dev/null)" ]; then
                   echo "✓ Successfully converted: $dir_basename"
                   echo "  Files generated: $(find "public/markdown/$dir_basename" -name "*.md" 2>/dev/null | wc -l)"
@@ -145,7 +144,6 @@ jobs:
         run: |
           cd devdocs/public/docs
           zip -r ../../../devdocs-user-html.zip *
-
           if [ -d "../markdown" ] && [ "$(ls -A ../markdown)" ]; then
             cd ../markdown
             zip -r ../../../devdocs-user-md.zip * -x "docs.json"
@@ -165,7 +163,7 @@ jobs:
           done
 
       - name: Upload artifacts
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02  # v4
         with:
           name: devdocs-files
           path: |
@@ -176,15 +174,14 @@ jobs:
           retention-days: 1
 
       - name: Create GitHub Release
-        uses: softprops/action-gh-release@v1
-        with:
-          tag_name: ${{ steps.generate_tag.outputs.tag_name }}
-          name: ${{ steps.generate_tag.outputs.release_name }}
-          draft: false
-          prerelease: false
-          files: |
-            _devdocs-all.txt
-            devdocs-user-html.zip
-            devdocs-user-md.zip
         env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TAG: ${{ steps.generate_tag.outputs.tag_name }}
+          NAME: ${{ steps.generate_tag.outputs.release_name }}
+        run: |
+          gh release create "$TAG" \
+            _devdocs-all.txt \
+            devdocs-user-html.zip \
+            devdocs-user-md.zip \
+            --title "$NAME" \
+            --generate-notes
